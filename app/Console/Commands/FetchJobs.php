@@ -1,48 +1,66 @@
 <?php
 
 namespace App\Console\Commands;
+
 use Illuminate\Console\Command;
 use App\Services\JobImportService;
 use Illuminate\Support\Facades\Http;
 
 class FetchJobs extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
-    protected $signature = 'jobs:fetch';
+    protected $signature = 'jobs:fetch 
+                            {--keywords=Developer,Programmer,Software Engineer} 
+                            {--pages=10}';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
-    protected $description = 'Fetch jobs from JSearch API';
+    protected $description = 'Fetch jobs from JSearch API with pagination and multiple keywords';
 
-    /**
-     * Execute the console command.
-     */
     public function handle(JobImportService $importer)
     {
-        $response = Http::withHeaders([
-            'X-API-KEY' => env('JSEARCH_KEY'),
-        ])->get('https://api.openweb ninja/jobs/search', [
-            'query' => 'Developer',
-            'location' => 'Philippines',
-            'num_pages' => 2,
-        ]);
+        $apiKey = env('JSEARCH_KEY');
 
-        if ($response->failed()) {
-            $this->error("Failed to fetch jobs");
+        if (!$apiKey) {
+            $this->error("Missing JSEARCH_KEY in .env");
             return;
         }
 
-        $data = $response->json()['data'] ?? [];
+        $keywords = explode(',', $this->option('keywords'));
+        $totalPages = (int) $this->option('pages');
+        $imported = 0;
 
-        $importer->importFromApi($data);
+        foreach ($keywords as $keyword) {
+            $keyword = trim($keyword);
+            $this->info("Fetching jobs for keyword: {$keyword}");
 
-        $this->info("Imported " . count($data) . " jobs.");
+            for ($page = 1; $page <= $totalPages; $page++) {
+
+                $response = Http::retry(3, 1000)->withHeaders([
+                    'X-API-KEY' => $apiKey,
+                ])->get('https://api.openwebninja/jobs/search', [
+                    'query' => $keyword,
+                    'location' => 'Philippines',
+                    'page' => $page,
+                ]);
+
+                if ($response->failed()) {
+                    $this->error("[Page {$page}] Failed to fetch data.");
+                    break;
+                }
+
+                $data = $response->json()['data'] ?? [];
+
+                if (empty($data)) {
+                    $this->info("No more data for {$keyword}");
+                    break;
+                }
+
+                $importer->importFromApi($data);
+                $imported += count($data);
+
+                $this->info("Imported " . count($data) . " jobs from page {$page}");
+                sleep(1); // avoid rate limit
+            }
+        }
+
+        $this->info("🎉 Fetch Complete! Total Imported: {$imported} jobs.");
     }
 }
